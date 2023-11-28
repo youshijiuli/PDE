@@ -5,31 +5,26 @@ import time
 import numpy as np
 import torch.nn.functional as F
 
+
+def f(X):
+    return (
+        (-2 * np.pi**2)
+        * np.exp(np.pi * (X[:, 0] + X[:, 1]))
+        * np.sin(np.pi * (X[:, 0] + X[:, 1]))
+    )
+
+
+def u_accuracy(X):
+    return (
+        np.exp(np.pi * (X[:, 0] + X[:, 1]))
+        * np.sin(np.pi * X[:, 0])
+        * np.sin(np.pi * X[:, 1])
+    )
+
+
 xa, xb = 0, 1
 ya, yb = 0, 1
 
-
-def f(x, y):
-    return -np.exp(-x) * (x - 2 + y**3 + 6 * y)
-
-
-def u_accuracy(x, y):
-    return np.exp(-x) * (x + y**3)
-
-
-"""
-def f(x,y):#微分方程的右边函数f
-    return - (2*np.pi**2)*np.exp(np.pi*(x + y))*np.sin(np.pi*(x + y))
-def u_accuracy(x,y):
-    return np.exp(np.pi*(x + y))*np.sin(np.pi*x)*np.sin(np.pi*y)
-
-
-
-def f(x,y):
-    return 0*x*y
-def u_accuracy(x,y):
-    return x*y
-"""
 dim = 2
 
 
@@ -46,8 +41,8 @@ class INSET:
             for j in range(self.ny):
                 self.X[i * self.ny + j, 0] = self.xa + (i + 0.5) * self.hx
                 self.X[i * self.ny + j, 1] = self.ya + (j + 0.5) * self.hy
-        self.u_acc = u_accuracy(self.X[:, 0], self.X[:, 1]).view(-1, 1)
-        self.right = f(self.X[:, 0], self.X[:, 1]).view(-1, 1)
+        self.u_acc = u_accuracy(self.X).view(-1, 1)
+        self.right = f(self.X).view(-1, 1)
 
 
 class BDSET:
@@ -78,7 +73,7 @@ class BDSET:
             self.X[m, 1] = ya + (j + 0.5) * self.hy
             m = m + 1
 
-        self.ub = u_accuracy(self.X[:, 0], self.X[:, 1]).view(-1, 1)
+        self.ub = u_accuracy(self.X).view(-1, 1)
 
 
 class TESET:
@@ -95,7 +90,7 @@ class TESET:
             for i in range(self.nx):
                 self.X[j * self.nx + i, 0] = self.xa + i * self.hx
                 self.X[j * self.nx + i, 1] = self.ya + j * self.hy
-        self.u_acc = u_accuracy(self.X[:, 0], self.X[:, 1]).view(-1, 1)
+        self.u_acc = u_accuracy(self.X).view(-1, 1)
 
 
 np.random.seed(1234)
@@ -164,7 +159,7 @@ class SIN(nn.Module):
         self.e = order
 
     def forward(self, x):
-        return torch.sin(x) ** self.e
+        return torch.relu(x) ** self.e
 
 
 class Res(nn.Module):
@@ -172,9 +167,9 @@ class Res(nn.Module):
         super(Res, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, output_size),
-            SIN(1),
+            SIN(2),
             nn.Linear(output_size, output_size),
-            SIN(1),
+            SIN(2),
         )
         self.input = input_size
         self.output = output_size
@@ -226,7 +221,7 @@ def traing(netg, netf, lenth, inset, optimg, epochg):
     trainerror = error(netg, netf, lenth, inset)
     print("epoch:%d,loss:%.3e,train error:%.3e" % (0, loss.item(), trainerror))
     torch.save(netg.state_dict(), "best_netg.pkl")
-    cycle = 100
+    cycle = 150
     for i in range(epochg):
         st = time.time()
         for j in range(cycle):
@@ -257,8 +252,8 @@ bdset = BDSET()
 teset = TESET()
 optimg = torch.optim.Adam(netg.parameters(), lr=5e-3)
 beta = 5e2
-optimf = torch.optim.Adam(netf.parameters(), lr=5e-2)
-epochg = 10
+optimf = torch.optim.Adam(netf.parameters(), lr=5e-3)
+epochg = 15
 epochf = 10
 
 trainf(netf, bdset, beta, optimf, epochf)
@@ -277,76 +272,5 @@ plt.colorbar()
 plt.xlabel("x")
 plt.ylabel("y")
 plt.title("the new solution")
-
-
-def deep_pred(net, model):  # u = netg*lenthfactor + netf
-    return net.forward(model.X)
-
-
-def deep_error(net, model):
-    fenzi = ((deep_pred(net, model) - model.u_acc) ** 2).detach().numpy().sum()
-    fenmu = (model.u_acc**2 + 1e-7).detach().numpy().sum()
-    return np.sqrt(fenzi / fenmu)
-
-
-def loss(net, inset, bdset, beta):
-    inset.X.requires_grad = True
-    u_in = deep_pred(net, inset)
-    (ux,) = torch.autograd.grad(
-        u_in,
-        inset.X,
-        create_graph=True,
-        retain_graph=True,
-        grad_outputs=torch.ones(inset.size, 1),
-    )
-    ub = deep_pred(net, bdset)
-    return (
-        0.5 * (ux**2).sum()
-        - (inset.right * u_in).sum()
-        + beta * ((ub - bdset.ub) ** 2).sum()
-    )
-
-
-def train(net, inset, bdset, beta, optim, epoch):
-    print("train Deep Ritz neural network ")
-    ERROR, BUZHOU = [], []
-    LOSS = loss(net, inset, bdset, beta)
-    lossoptimal = LOSS
-    trainerror = deep_error(net, inset)
-    print("epoch:%d,loss:%.3e,train error:%.3e" % (0, LOSS.item(), trainerror))
-    torch.save(net.state_dict(), "best_net.pkl")
-    cycle = 100
-    for i in range(epoch):
-        st = time.time()
-        for j in range(cycle):
-            optim.zero_grad()
-            LOSS = loss(net, inset, bdset, beta)
-            LOSS.backward()
-            optim.step()
-        if LOSS < lossoptimal:
-            lossoptimal = LOSS
-            torch.save(net.state_dict(), "best_net.pkl")
-        ela = time.time() - st
-        trainerror = deep_error(net, inset)
-        ERROR.append(trainerror)
-        BUZHOU.append((i + 1) * cycle)
-        print(
-            "epoch:%d,loss:%.3e,train error:%.3e,time:%.2f"
-            % ((i + 1) * cycle, LOSS.item(), trainerror, ela)
-        )
-    return ERROR, BUZHOU
-
-
-net = NETG()
-optim = torch.optim.Adam(net.parameters(), lr=5e-3)
-epoch = epochg
-OLDERROR, BUZHOU = train(net, inset, bdset, beta, optim, epoch)
-testerror = deep_error(net, teset)
-print(testerror)
-plt.plot(BUZHOU, OLDERROR, "r*")
-plt.plot(BUZHOU, OLDERROR, "b-", label="DRM", linewidth=2)
-plt.plot(BUZHOU, NEWERROR, "ko")
-plt.plot(BUZHOU, NEWERROR, "g-", label="new method", linewidth=2)
-plt.xlabel("epoch")
-plt.ylabel("error")
-plt.legend()
+plt.grid()
+plt.show()

@@ -1,29 +1,8 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-@File    :   index.py
-@Author  :   Cat 
-@Version :   3.11
-"""
-
-# 有限差分法求解PDE
-
-"""这是一个使用有限差分法求解偏导数方程的示例。
-在这个例子中，我们使用一维的欧拉方程作为例子。
-我们首先定义了一些基本函数，如UU和f，它们分别表示欧拉方程的左部和右部。
-然后我们创建了一个名为TESET的类，用于表示有限差分法的问题。在这个类中，我们定义了一些基本的属性和方法，如矩阵、右端、解和误差。
-最后，我们使用TESET类来求解欧拉方程，并绘制出解的图像。"""
-
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
 
 
-# UU(prob, X)：
-# 功能：计算欧拉方程的左部，即U(x, y)。
-# 参数：
-# prob：表示问题的维度，取值为1、2或3，分别表示一维欧拉方程、二维欧拉方程和三维欧拉方程。
-# X：表示问题的输入，是一个大小为nx2的二维张量，其中每一行表示一个样本点。
 def UU(prob, X):
     if prob == 1:
         return X[:, 0] ** 2 + X[:, 1] ** 2
@@ -35,12 +14,6 @@ def UU(prob, X):
         return X[:, 0] * X[:, 1]
 
 
-# f(prob, X)：
-# 功能：计算欧拉方程的右部，即f(x, y)。
-# 参数：
-# prob：表示问题的维度，取值为1、2或3，分别表示一维欧拉方程、二维欧拉方程和三维欧拉方程。
-# X：表示问题的输入，是一个大小为nx2的二维张量，其中每一行表示一个样本点。
-
 def f(prob, X):
     if prob == 1:
         return -4 * torch.exp(-X[:, 0]) * torch.exp(X[:, 0])
@@ -50,14 +23,8 @@ def f(prob, X):
         return 0 * X[:, 0]
 
 
-# 创建一个TESET类的实例，用于求解欧拉方程。
 class TESET:
     def __init__(self, bound, nx, prob):
-        """
-            bound：表示问题的边界，是一个大小为2x2的二维张量，分别表示x和y方向的边界。
-            nx：表示问题的网格点数，是一个大小为2的二维张量，分别表示x和y方向的网格点数。
-            prob：表示问题的维度，取值为1、2或3，分别表示一维欧拉方程、二维欧拉方程和三维欧拉方程。
-        """
         self.dim = 2
         self.nx = nx
         self.prob = prob
@@ -74,7 +41,6 @@ class TESET:
         self.u_acc = UU(prob, self.X).view(-1, 1)
 
     def matrix(self):
-        # 计算有限差分法的矩阵
         self.A = torch.zeros(self.nx[0] * self.nx[1], self.nx[0] * self.nx[1])
         dx = self.hx[0]
         dy = self.hx[1]
@@ -100,7 +66,6 @@ class TESET:
         return self.A
 
     def right(self):
-        # 计算有限差分法的右端
         self.b = torch.zeros(self.nx[0] * self.nx[1], 1)
         for i in range(self.nx[0]):
             for j in range(self.nx[1]):
@@ -127,13 +92,11 @@ class TESET:
         return self.b
 
     def solve(self):
-        # 求解Ax = b
-        # 使用有限差分法求解欧拉方程
         A = self.matrix()
         b = self.right()
-        # u, lu = torch.solve(b, A)   上面的代码已经被弃用
-        u = torch.linalg.solve(A, b)
-        return u
+        # u, lu = torch.solve(b, A)
+        res = torch.linalg.solve(A, b)
+        return res
 
 
 bound = torch.tensor([[-1, 1], [-1, 1]]).float()
@@ -144,12 +107,6 @@ u_pred = teset.solve()
 
 
 def error(u_pred, u_acc):
-    """error(u_pred, u_acc)：
-        功能：计算两个解的误差。
-        参数：
-        u_pred：表示预测解。
-        u_acc：表示实际解。
-    """    
     fenzi = ((u_pred - u_acc) ** 2).sum()
     fenmu = (u_acc**2 + 1e-6).sum()
     return np.sqrt(fenzi / fenmu)
@@ -165,11 +122,5 @@ plt.colorbar()
 plt.xlabel("x")
 plt.ylabel("y")
 plt.title("the FD solution")
-plt.grid()
-plt.show()
 
-
-    
-# 这段代码是一个使用深度学习求解偏微分方程的例子。在二维欧拉方程中，我们首先定义了偏导数项，然后通过前向传播和线性代数求解器来求解欧拉方程。最后，我们画出了求解后的图像。
-
-# 在图像中，颜色深浅代表了求解后的解的值。蓝色表示解的值较大，白色表示解的值较小。可以看出，在二维欧拉方程中，解的值随着x和y的变化而变化。
+# tensor(2.4855e-07)

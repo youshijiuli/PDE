@@ -20,10 +20,3 @@
 
 [二维 Poisson 方程](./Poisson_2D/README.md)
 
-[微带线的计算](./microstrip/README.md)
-
-[平板波导的不均匀性](./Parallel-Plate-Waveguide/README.md)
-
-[喇叭天线辐射](./horn-antenna/README.md)
-
-[T隔膜波导模式问题](./T-septate/README.md)

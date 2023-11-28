@@ -7,11 +7,11 @@ node = np.array([
     (0, 0), 
     (1, 0), 
     (1, 1),
-    (0, 1)], dtype=np.float)
+    (0, 1)], dtype=np.float32)
 # 单元顶点编号数组
 cell = np.array([
     (1, 2, 0), 
-    (3, 0, 2)], dtype=np.int)
+    (3, 0, 2)], dtype=np.int32)
 tmesh = TriangleMesh(node, cell) # 三角形网格实例
 print(node)
 print(cell)

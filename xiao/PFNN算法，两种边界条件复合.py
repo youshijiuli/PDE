@@ -1,9 +1,8 @@
 import torch
-import matplotlib.pyplot as plt
-import torch.nn as nn
 import time
 import numpy as np
-import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import torch.nn as nn
 
 
 def U(X, order, prob):
@@ -247,13 +246,6 @@ class BDSET:
             m = m + 1
         self.Dright = U(self.DX, [0, 0], prob).view(-1, 1)  # 储存Dirichlet边界精确解取值
         self.Nright = NEU(self.NX, self.Nn, prob).view(-1, 1)  # 储存Neumann边界上条件
-        self.AM = torch.zeros(
-            self.DS, 2, 2
-        )  # 储存矩阵A在所有内点的取值，方便损失函数计算 (A \nabla u)* \nabal u
-        self.AM[:, 0, 0] = A(self.DX, 0, [1, 1])
-        self.AM[:, 0, 1] = A(self.DX, 0, [1, 2])
-        self.AM[:, 1, 0] = A(self.DX, 0, [2, 1])
-        self.AM[:, 1, 1] = A(self.DX, 0, [2, 2])
 
 
 class TESET:
@@ -278,6 +270,19 @@ np.random.seed(1234)
 torch.manual_seed(1234)
 
 
+class NETG(nn.Module):  # u = netf*lenthfactor + netg，此为netg
+    def __init__(self):
+        super(NETG, self).__init__()
+        self.fc1 = torch.nn.Linear(2, 10)
+        self.fc2 = torch.nn.Linear(10, 10)
+        self.fc3 = torch.nn.Linear(10, 1)
+
+    def forward(self, x):
+        out = torch.sin(self.fc1(x))
+        out = torch.sin(self.fc2(out)) + x @ torch.eye(x.size(1), 10)
+        return self.fc3(out)
+
+
 class SIN(nn.Module):  # u = netg*lenthfactor + netf，此为netg网络所用的激活函数
     def __init__(self, order):
         super(SIN, self).__init__()
@@ -292,9 +297,9 @@ class Res(nn.Module):
         super(Res, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, output_size),
-            SIN(2),
+            SIN(1),
             nn.Linear(output_size, output_size),
-            SIN(2),
+            SIN(1),
         )
         self.input = input_size
         self.output = output_size
@@ -315,8 +320,19 @@ class NETF(nn.Module):  # u = netg*lenthfactor + netf，此为netg，此netg逼�
         return self.fc(out)
 
 
-def pred(netf, X):
-    return netf.forward(X)
+class lenthfactor:
+    def __init__(self, bound, mu):
+        self.bound = bound
+        self.dim = 2
+        self.hx = self.bound[1] - self.bound[0]
+        self.mu = mu
+
+    def forward(self, X):
+        return (X[:, 0:1] - self.bound[0]) / self.hx
+
+
+def pred(netg, netf, lenth, X):
+    return netg.forward(X) + lenth.forward(X) * netf.forward(X)
 
 
 def error(u_pred, u_acc):
@@ -324,73 +340,81 @@ def error(u_pred, u_acc):
 
 
 # ----------------------------------------------------------------------------------------------------
+def Lossg(netg, bdset):  # 拟合Dirichlet边界
+    ub = netg.forward(bdset.DX)
+    return bdset.Dlenth * ((ub - bdset.Dright) ** 2).sum()
 
 
-def Lossf(netf, inset, bdset, beta):  # 此为deep nitsche 算法损失函数
+def Lossf(netf, inset, bdset):
     inset.X.requires_grad = True
-    u_in = pred(netf, inset.X)
-    (ux_in,) = torch.autograd.grad(
-        u_in,
-        inset.X,  # 计算长度因子关于内部点输入的梯度
+    insetF = netf.forward(inset.X)
+    (insetFx,) = torch.autograd.grad(
+        insetF,
+        inset.X,
         create_graph=True,
         retain_graph=True,
         grad_outputs=torch.ones(inset.size, 1),
     )
-    temp_in = (inset.AM @ ux_in.view(-1, 2, 1)).view(-1, 2)
-    out_in = (
-        0.5 * inset.area * ((temp_in * ux_in).sum(1)).mean()
+    u_in = inset.G + inset.L * insetF  # inset.G为netg在inset.X上取值，后面训练时提供，此举为加快迭代速度
+    ux = inset.Gx + inset.Lx * insetF + inset.L * insetFx  # 复合函数求导，提高迭代效率
+
+    temp = (inset.AM @ ux.view(-1, inset.dim, 1)).view(-1, inset.dim)
+
+    ub = bdset.N_G + bdset.N_L * netf.forward(bdset.NX)
+
+    return (
+        0.5 * inset.area * ((temp * ux).sum(1)).mean()
         - inset.area * (inset.right * u_in).mean()
+        - bdset.Nlenth * (bdset.Nright * ub).mean()
     )
-    # Dirichlet
-    bdset.DX.requires_grad = True
-    ub_D = pred(netf, bdset.DX)
-    (ux_b,) = torch.autograd.grad(
-        ub_D,
-        bdset.DX,  # 计算长度因子关于内部点输入的梯度
-        create_graph=True,
-        retain_graph=True,
-        grad_outputs=torch.ones(bdset.DS, 1),
-    )
-    temp_b = (bdset.AM @ ux_b.view(-1, 2, 1)).view(-1, 2)
-    n = bdset.Dn.view(-1, 1, 2)
-    uAu = (ub_D * temp_b).view(-1, 2, 1)
-    tem = temp_b.view(-1, 2, 1)
-    out_D = (
-        0.5 * beta * bdset.Dlenth * (ub_D**2).mean()
-        - bdset.Dlenth * (n @ uAu).mean()
-        - bdset.Dlenth * (bdset.Dright * (beta * ub_D - (n @ tem).view(-1, 1))).mean()
-    )
-    # Neumann
-    ub_N = pred(netf, bdset.NX)
-    out_N = -bdset.Nlenth * (ub_N * bdset.Nright).mean()
-    return out_in + out_D + out_N
+
+
+def Traing(netg, bdset, optimg, epochg):
+    print("train neural network g")
+    lossg = Lossg(netg, bdset)
+    lossbest = lossg
+    print("epoch:%d,lossf:%.3e" % (0, lossg.item()))
+    torch.save(netg.state_dict(), "best_netg.pkl")
+    cycle = 100
+    for i in range(epochg):
+        st = time.time()
+        for j in range(cycle):
+            optimg.zero_grad()
+            lossg = Lossg(netg, bdset)
+            lossg.backward()
+            optimg.step()
+        if lossg < lossbest:
+            lossbest = lossg
+            torch.save(netg.state_dict(), "best_netg.pkl")
+        ela = time.time() - st
+        print("epoch:%d,lossg:%.3e,time:%.2f" % ((i + 1) * cycle, lossg.item(), ela))
 
 
 # Train neural network f
-def Trainf(netf, inset, bdset, beta, optimf, epochf):
+def Trainf(netf, inset, bdset, optimf, epochf):
     print("train neural network f")
     ERROR, BUZHOU = [], []
-    lossf = Lossf(netf, inset, bdset, beta)
+    lossf = Lossf(netf, inset, bdset)
     lossoptimal = lossf
-    trainerror = error(netf.forward(inset.X), inset.u_acc)
+    trainerror = error(inset.G + inset.L * netf.forward(inset.X), inset.u_acc)
     print(
         "epoch: %d, loss: %.3e, trainerror: %.3e" % (0, lossf.item(), trainerror.item())
     )
-    torch.save(netf.state_dict(), "best_netf.mdl")
+    torch.save(netf.state_dict(), "best_netf.pkl")
     cycle = 100
     for i in range(epochf):
         st = time.time()
         for j in range(cycle):
             optimf.zero_grad()
-            lossf = Lossf(netf, inset, bdset, beta)
+            lossf = Lossf(netf, inset, bdset)
             lossf.backward()
             optimf.step()
         if lossf < lossoptimal:
             lossoptimal = lossf
-            torch.save(netf.state_dict(), "best_netf.mdl")
+            torch.save(netf.state_dict(), "best_netf.pkl")
         ela = time.time() - st
-        trainerror = error(netf.forward(inset.X), inset.u_acc)
-        ERROR.append(trainerror)
+        trainerror = error(inset.G + inset.L * netf.forward(inset.X), inset.u_acc)
+        ERROR.append(trainerror.item())
         BUZHOU.append((i + 1) * cycle)
         print(
             "epoch:%d,lossf:%.3e,train error:%.3e,time:%.2f"
@@ -399,30 +423,87 @@ def Trainf(netf, inset, bdset, beta, optimf, epochf):
     return ERROR, BUZHOU
 
 
+# Train neural network
+def Train(netg, netf, lenth, inset, bdset, optimg, optimf, epochg, epochf):
+    # Calculate the length factor
+    inset.X.requires_grad = True
+    inset.L = lenth.forward(inset.X)
+    (inset.Lx,) = torch.autograd.grad(
+        inset.L,
+        inset.X,  # 计算长度因子关于内部点输入的梯度
+        create_graph=True,
+        retain_graph=True,
+        grad_outputs=torch.ones(inset.size, 1),
+    )
+    bdset.N_L = lenth.forward(bdset.NX)  # 计算长度因子关于Neumann边界样本点的梯度
+
+    inset.L = inset.L.data
+    inset.Lx = inset.Lx.data
+    bdset.N_L = bdset.N_L.data
+
+    # Train neural network g
+    Traing(netg, bdset, optimg, epochg)
+
+    netg.load_state_dict(torch.load("best_netg.pkl"))
+    inset.X.requires_grad = True
+    inset.G = netg.forward(inset.X)
+    (inset.Gx,) = torch.autograd.grad(
+        inset.G,
+        inset.X,
+        create_graph=True,
+        retain_graph=True,
+        grad_outputs=torch.ones(inset.size, 1),
+    )
+    bdset.N_G = netg.forward(bdset.NX)
+
+    inset.G = inset.G.data
+    inset.Gx = inset.Gx.data
+    bdset.N_G = bdset.N_G.data
+
+    # Train neural network f
+    ERROR, BUZHOU = Trainf(netf, inset, bdset, optimf, epochf)
+    return ERROR, BUZHOU
+
+
 def main():
-    bound = torch.Tensor([-1.0, 1.0, -1.0, 1.0]).reshape(2, 2)
-    nx_tr = [50, 60]  # 训练集剖分
-    nx_te = [100, 100]
-    prob = 1
-    beta = 5e2
-    epochf = 10
-    lr = 1e-2
+    # Configurations
+    prob = 4
+    bounds = torch.Tensor([-1.0, 1.0, -1.0, 1.0]).reshape(2, 2)
+    nx_tr = [60, 60]  # 训练集剖分
+    nx_te = [101, 101]  # 测试集剖分
+    epochg = 4
+    epochf = 4
+    lr = 0.01
     tests_num = 1
+
+    # ------------------------------------------------------------------------------------------------
     testerror = torch.zeros(tests_num)
     for it in range(tests_num):
-        inset = INSET(bound, nx_tr, prob)
-        bdset = BDSET(bound, nx_tr, prob)
-        teset = TESET(bound, nx_te, prob)
+        inset = INSET(bounds, nx_tr, prob)
+        bdset = BDSET(bounds, nx_tr, prob)
+        teset = TESET(bounds, nx_te, prob)
+
+        lenth = lenthfactor(bounds[0, :], 1)
+
+        netg = NETG()
         netf = NETF()
+        optimg = torch.optim.Adam(netg.parameters(), lr=lr)
         optimf = torch.optim.Adam(netf.parameters(), lr=lr)
+
         start_time = time.time()
-        Trainf(netf, inset, bdset, beta, optimf, epochf)
+        ERROR, BUZHOU = Train(
+            netg, netf, lenth, inset, bdset, optimg, optimf, epochg, epochf
+        )
+        print(ERROR, BUZHOU)
         elapsed = time.time() - start_time
         print("Train time: %.2f" % (elapsed))
-        netf.load_state_dict(torch.load("best_netf.mdl"))
-        te_U = pred(netf, teset.X)
+
+        netg.load_state_dict(torch.load("best_netg.pkl"))
+        netf.load_state_dict(torch.load("best_netf.pkl"))
+        te_U = pred(netg, netf, lenth, teset.X)
         testerror[it] = error(te_U, teset.u_acc)
         print("testerror = %.3e\n" % (testerror[it].item()))
+
     print(testerror.data)
     testerror_mean = testerror.mean()
     testerror_std = testerror.std()
